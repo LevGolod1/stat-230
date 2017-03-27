@@ -1,0 +1,570 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+**Stat 230: Linear Models**  
+**Homework 4**  
+**Professor Ding**  
+**Lev Golod**
+
+```{r prelim, include=FALSE, warning=FALSE}
+library(sandwich)
+library(parallel)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lmtest)
+no_cores <- detectCores() - 1
+options(digits=4, max.print = 50)
+```
+
+
+
+#### QUESTION 4, Part (A) Setup
+
+```{r q4_setup, warning=FALSE}
+set.seed(753)
+n <- 1e5
+
+combs <- expand.grid(p1=c(1,2,3),
+                     p2=c(1,3,5),
+                     p3=c(1,2,3),
+                     p4=c(0.2,0.5,0.8))
+
+x1 <- function(b) rnorm(n=1, sd=b )
+x2 <- function(b) runif(n=1, min=-b, max=b)
+x3 <- function(b) rchisq(n=1, df=b)
+x4 <- function(b) rbinom(n=1, size=1, prob=b)
+
+# paste0('x',1:4,'(as.numeric(p[',1:4,']))',collapse=', ')
+xi <- function(p) c(x1(as.numeric(p[1])), x2(as.numeric(p[2])),
+                    x3(as.numeric(p[3])), x4(as.numeric(p[4])))
+
+sample_fn <- function(j) xi(as.numeric(combs[j,]))
+
+mysamples <- replicate(3, sample(81, n, replace = TRUE))
+# mysamples[1:10,1]
+
+# X1 <- t(sapply(mysamples[,1], sample_fn))
+# X1 <- t(sapply(mysamples[1:10,1], sample_fn))
+
+# X1 <- unlist(parLapply(cl, mysamples[1:10,1], sample_fn))
+# X1 <- matrix(unlist(parLapply(cl, mysamples[,1], sample_fn)),
+#              ncol=4,byrow = TRUE)
+cl <- makeCluster(no_cores, type='FORK')
+for (i in 1:3){
+  
+  text1 <- paste0('X', i, 
+                  ' <- data.frame(matrix(unlist(parLapply(cl, mysamples[,', i,
+                  '], sample_fn)), ncol=4,byrow = TRUE))')  
+  print(system.time(eval(parse(text=text1))))
+  # eval(parse(text=text1))
+  
+  text2 <- paste0('names(X', i, ') <- tolower(names(X', i, '))')
+  eval(parse(text=text2))
+  
+}
+stopCluster(cl)
+
+X1$e <- rchisq(n, 5)
+X2$e <- rchisq(n, 5) * (1.6 + X2$x3)^0.5
+X3$e <- rchisq(n, 5) * (2.5 + X3$x4)^0.5 * X3$x3^0.5
+Xlist <- list(X1=X1,X2=X2,X3=X3)
+
+# X1$y <- 1 + X1$x1 + X1$x2 + X1$x3 + X1$e
+# X1$y <- 1 + rowSums(X1[, c('x1','x2','x3','e')])
+for (i in 1:3){
+  text1 <- paste0('X', i, '$y <- 1 + rowSums(X', i, 
+                  "[, c('x1','x2','x3','e')])")
+  eval(parse(text=text1))
+}
+
+Ns <- list(25,50,100,250,500,1000)
+# data_samples <- function(){
+#   dat <- lapply(Ns, function(x) lapply(Xlist, function(j) j[sample(n, x),]))
+#   names(dat) <- paste0('N', Ns)
+#   return(dat)
+# }
+
+save.image('./data/q4_a.Rdata')
+  
+```
+
+
+
+
+#### QUESTION 4, Part (B) Homoskedastic Data
+
+The HC3 Covariance Estimator seems favorable in terms of size: it tends to    
+have the lower type I error rate. However, it also has lower power at small    
+sample sizes, e.g. n = {25, 50}.    
+For small samples, Hc0 has the best power. This suggests that HC3 is a more     
+conservative estimate of the covariance, compared to HC1.  Once the sample    
+size increases to abount 100, all of the tests have power close to 1.   
+In the plots we also observe that size decreases and power increases as sample    
+size increases, which makes sense. The one exception is power for Beta 4.    
+Since x4 is included in the model, but not included in the data-generating    
+process for y, the truth is that B4 should be very close to 0. So it makes    
+sense that power does not increase with sample size for B4.    
+
+```{r q4_b}
+load('./data/q4_a.Rdata')
+B <- 1000
+cl <- makeCluster(no_cores, type='FORK')
+homo_samp_ind <- parLapply(cl, 
+                          as.list(sort(rep(unlist(Ns), B))), 
+                          function(j) sample(x=n, size=j, replace = FALSE))
+names(homo_samp_ind) <- lapply(homo_samp_ind, length)
+homo_samples <- parLapply(cl, 
+                          homo_samp_ind,
+                          function(j) X1[j,])
+stopCluster(cl)
+
+mylm <- function(dat) lm(y ~ x1 + x2 + x3 + x4, data = dat)
+true_coeff <- mylm(X1)$coefficients
+# true_coeff <- lm(y ~ x1 + x2 + x3 + x4, data = X1)$coefficients
+print(true_coeff)
+  
+
+# k = 1; dat = homo_samples[[2030]]; b <- 00
+## Function to get 5 p values - corresponding to OLS Cov Mat, HC 0-3
+#  Input is data, outut is vector of p values
+pvals <- function(dat, k, b){
+  
+  fit <- mylm(dat)
+  beta_k <- fit$coefficients[k+1]
+
+  ## OLS covariance matrix 
+  p_samp = 5
+  n_samp = nrow(dat)
+  dat$one <- 1
+  xmat <- as.matrix(select(dat, -c(y,e)))
+  if (!all.equal(colnames(xmat), c("x1","x2","x3","x4","one"))) stop('Knope!')
+  xtx_inv <- solve(t(xmat) %*% xmat)
+  sigma_hat_sq <- sum(fit$residuals^2)/(n_samp-p_samp)
+  covOLS <- xtx_inv * sigma_hat_sq
+  mycov <- covOLS
+  
+  # test_stat_OLS <- abs(beta_k - b )/(mycov[k,k]^0.5)
+  # p1 <- pt(test_stat_OLS, df = n_samp - p_samp, lower.tail = FALSE)*2
+  
+  ### HC0
+  # phi_hat <- diag(fit$residuals^2)
+  # HC0 <- xtx_inv %*% t(xmat) %*% phi_hat %*% xmat %*% xtx_inv
+  
+  test_stat_OLS <- abs(beta_k - b )/(mycov[k,k]^0.5)
+  test_stat_HC0 <- abs(beta_k - b )/vcovHC(fit,type='HC0')[k+1,k+1]^0.5
+  test_stat_HC1 <- abs(beta_k - b )/vcovHC(fit,type='HC1')[k+1,k+1]^0.5
+  test_stat_HC2 <- abs(beta_k - b )/vcovHC(fit,type='HC2')[k+1,k+1]^0.5
+  test_stat_HC3 <- abs(beta_k - b )/vcovHC(fit,type='HC3')[k+1,k+1]^0.5
+  
+  #  NB: TWO SIDED HYPOTHESIS TEST
+  my_pt <- function(test_stat){ 
+    pt(test_stat, df = n_samp - p_samp, lower.tail = FALSE)*2
+  }
+  
+  ps <- c(my_pt(test_stat_OLS),
+          my_pt(test_stat_HC0),
+          my_pt(test_stat_HC1),
+          my_pt(test_stat_HC2),
+          my_pt(test_stat_HC3))
+  names(ps) <- c('OLSCM','HC0','HC1','HC2','HC3')
+  ps
+  
+}
+
+# pvals(homo_samples[[30]], k=1, b=true_coeff[1+2])
+
+
+
+####
+#### EMPIRICAL SIZE
+#### Null hypothesis is Beta = Beta* (from regression w/ the full data)
+
+### Loop through the coefficients Beta1...Beta 4 (j = 1:4)
+for (j in 1:4){
+  
+  ## Get p values for all of our samples: 
+  #  1000 samples each for N = 25, 50, ... 1000
+  cl <- makeCluster(no_cores, type='FORK')
+  print(system.time(all_pvals_size <- parLapply(cl, homo_samples, 
+                                          function(x) pvals(dat=x, 
+                                                            k=j,
+                                                            b=true_coeff[j+1]))
+                    ))
+  stopCluster(cl)
+  # all_pvals_size[1:3]
+  pvals_size_mat <- matrix(unlist(all_pvals_size),
+                              ncol=length(all_pvals_size[[1]]),
+                              byrow=TRUE)
+  
+  ## REJECTION <- p < alpha = 0.5
+  reject_size_mat <- pvals_size_mat<0.05
+  reject_size_mat <- cbind(as.numeric(names(all_pvals_size)), reject_size_mat)
+  colnames(reject_size_mat) <- c('n', names(all_pvals_size[[1]]))
+  
+  ## Make a plot of the empirical size 
+  types = c('OLSCM', 'HC0', 'HC1', 'HC2', 'HC3')
+  
+  # paste0(types,  '=mean(', types, ')', collapse = ', ')
+  size_mat <- data.frame(reject_size_mat) %>% 
+    group_by(n) %>%
+    summarise(OLSCM=mean(OLSCM), HC0=mean(HC0), HC1=mean(HC1), 
+              HC2=mean(HC2), HC3=mean(HC3))
+  size_mat
+  size_mat <- gather(size_mat, type, reject_rate, c(OLSCM,HC0,HC1,HC2,HC3))
+  size_mat[,1] <- as.numeric(as.factor(unlist(size_mat[,1])))
+  size_plt <- ggplot(size_mat, aes(x=n, y=reject_rate, 
+                                   colour = type, shape=type))+
+    geom_point()+
+    geom_line()+
+    ggtitle(paste0('Question 4, Part B, Size, Beta', j))+
+    theme_bw() + 
+    scale_x_continuous(breaks=unique(unlist(size_mat[,1])),
+                                    labels=unlist(Ns))
+  print(size_plt)
+  
+}
+
+
+
+###
+### POWER 
+### Null hypothesis is Beta = 0
+# j = 1
+
+for (j in 1:4){
+
+ ## Get p values for all of our samples: 
+  #  1000 samples each for N = 25, 50, ... 1000
+  cl <- makeCluster(no_cores, type='FORK')
+  print(system.time(all_pvals_power <- parLapply(cl, homo_samples, 
+                                          function(x) pvals(dat=x, 
+                                                            k=j,
+                                                            b=0))
+                    ))
+  stopCluster(cl)
+  # all_pvals_power[1:3]
+  pvals_power_mat <- matrix(unlist(all_pvals_power),
+                              ncol=length(all_pvals_power[[1]]),
+                              byrow=TRUE)
+  
+  ## REJECTION <- p < alpha = 0.5
+  reject_power_mat <- pvals_power_mat<0.05
+  reject_power_mat <- cbind(as.numeric(names(all_pvals_power)), reject_power_mat)
+  colnames(reject_power_mat) <- c('n', names(all_pvals_power[[1]]))
+  
+  ## Make a plot of the empirical power 
+  types = c('OLSCM', 'HC0', 'HC1', 'HC2', 'HC3')
+  
+  apply(reject_power_mat[reject_power_mat[,1]==25,-1],2,mean)
+  
+  # paste0(types,  '=mean(', types, ')', collapse = ', ')
+  power_mat <- data.frame(reject_power_mat) %>% 
+    group_by(n) %>%
+    summarise(OLSCM=mean(OLSCM), HC0=mean(HC0), HC1=mean(HC1), 
+              HC2=mean(HC2), HC3=mean(HC3))
+  power_mat
+  power_mat <- gather(power_mat, type, reject_rate,
+                      c(OLSCM,HC0,HC1,HC2,HC3))
+  power_mat[,1] <- as.numeric(as.factor(unlist(power_mat[,1])))
+  power_plt <- ggplot(power_mat, aes(x=(n), 
+                                     y=reject_rate, 
+                                     colour = type, 
+                                     shape=type)) +
+    geom_point()+
+    geom_line()+
+    ggtitle(paste0('Question 4, Part B, Power, Beta', j))+
+    theme_bw() + 
+    scale_x_continuous(breaks=unique(unlist(power_mat[,1])),
+                                    labels=unlist(Ns))
+  print(power_plt)
+  
+}
+
+save.image('./data/q4_b.Rdata')
+
+```
+
+
+
+
+#### QUESTION 4, Part (C) Heteroskedastic Data
+
+Regarding size, HC3 seems to be the best once again. It's interesting to note  
+that the OLSCM completely fails when it comes to Beta 3. This makes sense,  
+since the error terms depends on X3.  
+For small samples, HC0 has the best power. This suggests that HC3 is a more   
+conservative estimate of the covariance, compared to HC1. For the  
+homoskedastic data, all of the covariance estimators achieved power close to 1  
+once sample size grew to 100. For the Heteroskedastic case with X1 and X2,  
+that doesn't happen until n=250. This suggests that heteroskedasticity lowers  
+our power in some situations.
+
+
+```{r q4_c}
+load('./data/q4_b.Rdata')
+# B <- 1000
+cl <- makeCluster(no_cores, type='FORK')
+hetero1_samp_ind <- parLapply(cl, 
+                          as.list(sort(rep(unlist(Ns), B))), 
+                          function(j) sample(x=n, size=j, replace = FALSE))
+names(hetero1_samp_ind) <- lapply(hetero1_samp_ind, length)
+hetero1_samples <- parLapply(cl, 
+                          hetero1_samp_ind,
+                          function(j) X2[j,])
+stopCluster(cl)
+
+# mylm <- function(dat) lm(y ~ x1 + x2 + x3 + x4, data = dat)
+true_coeff <- mylm(X2)$coefficients
+print(true_coeff)
+  
+
+####
+#### EMPIRICAL SIZE
+#### Null hypothesis is Beta = Beta* (from regression w/ the full data)
+
+### Loop through the coefficients Beta1...Beta 4 (j = 1:4)
+for (j in 1:4){
+  
+  ## Get p values for all of our samples: 
+  #  1000 samples each for N = 25, 50, ... 1000
+  cl <- makeCluster(no_cores, type='FORK')
+  print(system.time(
+    all_pvals_size <- parLapply(cl, hetero1_samples, 
+                                function(x) pvals(dat=x, 
+                                                  k=j,
+                                                  b=true_coeff[j+1]))))
+  stopCluster(cl)
+  # all_pvals_size[1:3]
+  pvals_size_mat <- matrix(unlist(all_pvals_size),
+                              ncol=length(all_pvals_size[[1]]),
+                              byrow=TRUE)
+  
+  ## REJECTION <- p < alpha = 0.5
+  reject_size_mat <- pvals_size_mat<0.05
+  reject_size_mat <- cbind(as.numeric(names(all_pvals_size)), reject_size_mat)
+  colnames(reject_size_mat) <- c('n', names(all_pvals_size[[1]]))
+  
+  ## Make a plot of the empirical size 
+  types = c('OLSCM', 'HC0', 'HC1', 'HC2', 'HC3')
+  
+  # paste0(types,  '=mean(', types, ')', collapse = ', ')
+  size_mat <- data.frame(reject_size_mat) %>% 
+    group_by(n) %>%
+    summarise(OLSCM=mean(OLSCM), HC0=mean(HC0), HC1=mean(HC1), 
+              HC2=mean(HC2), HC3=mean(HC3))
+  size_mat
+  size_mat <- gather(size_mat, type, reject_rate, c(OLSCM,HC0,HC1,HC2,HC3))
+  size_mat[,1] <- as.numeric(as.factor(unlist(size_mat[,1])))
+  size_plt <- ggplot(size_mat, aes(x=n, y=reject_rate, 
+                                   colour = type, shape=type))+
+    geom_point()+
+    geom_line()+
+    ggtitle(paste0('Question 4, Part C, Size, Beta', j))+
+    theme_bw() + 
+    scale_x_continuous(breaks=unique(unlist(size_mat[,1])),
+                                    labels=unlist(Ns))
+  print(size_plt)
+  
+}
+
+
+
+###
+### POWER 
+### Null hypothesis is Beta = 0
+# j = 1
+
+for (j in 1:4){
+
+ ## Get p values for all of our samples: 
+  #  1000 samples each for N = 25, 50, ... 1000
+  cl <- makeCluster(no_cores, type='FORK')
+  print(system.time(all_pvals_power <- parLapply(cl, hetero1_samples, 
+                                          function(x) pvals(dat=x, 
+                                                            k=j,
+                                                            b=0))
+                    ))
+  stopCluster(cl)
+  # all_pvals_power[1:3]
+  pvals_power_mat <- matrix(unlist(all_pvals_power),
+                              ncol=length(all_pvals_power[[1]]),
+                              byrow=TRUE)
+  
+  ## REJECTION <- p < alpha = 0.5
+  reject_power_mat <- pvals_power_mat<0.05
+  reject_power_mat <- cbind(as.numeric(names(all_pvals_power)), reject_power_mat)
+  colnames(reject_power_mat) <- c('n', names(all_pvals_power[[1]]))
+  
+  ## Make a plot of the empirical power 
+  types = c('OLSCM', 'HC0', 'HC1', 'HC2', 'HC3')
+  
+  apply(reject_power_mat[reject_power_mat[,1]==25,-1],2,mean)
+  
+  # paste0(types,  '=mean(', types, ')', collapse = ', ')
+  power_mat <- data.frame(reject_power_mat) %>% 
+    group_by(n) %>%
+    summarise(OLSCM=mean(OLSCM), HC0=mean(HC0), HC1=mean(HC1), 
+              HC2=mean(HC2), HC3=mean(HC3))
+  power_mat
+  power_mat <- gather(power_mat, type, reject_rate,
+                      c(OLSCM,HC0,HC1,HC2,HC3))
+  power_mat[,1] <- as.numeric(as.factor(unlist(power_mat[,1])))
+  power_plt <- ggplot(power_mat, aes(x=(n), 
+                                     y=reject_rate, 
+                                     colour = type, 
+                                     shape=type)) +
+    geom_point()+
+    geom_line()+
+    ggtitle(paste0('Question 4, Part C, Power, Beta', j))+
+    theme_bw() + 
+    scale_x_continuous(breaks=unique(unlist(power_mat[,1])),
+                                    labels=unlist(Ns))
+  print(power_plt)
+  
+}
+
+save.image('./data/q4_c.Rdata')
+
+```
+
+
+
+
+#### QUESTION 4, Part (D) Heteroskedastic Data, BP Procedure
+
+I think the BP test is better than the others. I conclude that it's more  
+worthwhile to use the Heteroskedasticity-robust variance estimate when there  
+is actually evidence of Heteroskedasticity.  
+
+```{r q4_d}
+load('./data/q4_c.Rdata')
+
+cl <- makeCluster(no_cores, type='FORK')
+hetero2_samp_ind <- parLapply(cl, 
+                          as.list(sort(rep(unlist(Ns), B))), 
+                          function(j) sample(x=n, size=j, replace = FALSE))
+names(hetero2_samp_ind) <- lapply(hetero2_samp_ind, length)
+hetero2_samples <- parLapply(cl, 
+                          hetero2_samp_ind,
+                          function(j) X3[j,])
+stopCluster(cl)
+
+# mylm <- function(dat) lm(y ~ x1 + x2 + x3 + x4, data = dat)
+true_coeff <- mylm(X3)$coefficients
+print(true_coeff)
+
+
+
+## BP procedure - fn to get p values
+# k = 1; dat = hetero2_samples[[2030]]; b <- true_coeff[k+1]
+## Function to get 5 p values - corresponding to OLS Cov Mat, HC 0-3
+#  Input is data, outut is vector of p values
+pvals_bp <- function(dat, k, b){
+  
+  p_samp = 5
+  n_samp = nrow(dat)
+  
+  fit <- mylm(dat)
+  beta_k <- fit$coefficients[k+1]
+  
+
+  #  NB: TWO SIDED HYPOTHESIS TEST
+  my_pt <- function(test_stat){ 
+    pt(test_stat, df = n_samp - p_samp, lower.tail = FALSE)*2
+  }
+  
+  ## If we reject the Null in the BP test, we have heteroskedasticity. In 
+  #  that case, use the HC covariances. Else use the OLS.
+  if (bptest(fit)$`p.value` < 0.05){
+    
+    # Hetroskdasticity - use HC0..HC3
+    test_stat_HC0 <- abs(beta_k - b )/vcovHC(fit,type='HC0')[k+1,k+1]^0.5
+    test_stat_HC1 <- abs(beta_k - b )/vcovHC(fit,type='HC1')[k+1,k+1]^0.5
+    test_stat_HC2 <- abs(beta_k - b )/vcovHC(fit,type='HC2')[k+1,k+1]^0.5
+    test_stat_HC3 <- abs(beta_k - b )/vcovHC(fit,type='HC3')[k+1,k+1]^0.5
+    
+    ps <- c(my_pt(test_stat_HC0),
+            my_pt(test_stat_HC1),
+            my_pt(test_stat_HC2),
+            my_pt(test_stat_HC3))
+    
+  } else{
+    
+    # Homoskedasticity: use OLS CM but repeat it 4 times
+    dat$one <- 1
+    xmat <- as.matrix(select(dat, -c(y,e)))
+    if (!all.equal(colnames(xmat), c("x1","x2","x3","x4","one"))) stop('Knope!')
+    xtx_inv <- solve(t(xmat) %*% xmat)
+    sigma_hat_sq <- sum(fit$residuals^2)/(n_samp-p_samp)
+    mycov <- xtx_inv * sigma_hat_sq
+    test_stat_OLS <- abs(beta_k - b )/(mycov[k,k]^0.5)
+    
+    ps <- rep(my_pt(test_stat_OLS), 4)
+    
+  }
+  
+  names(ps) <- c('bp_HC0','bp_HC1','bp_HC2','bp_HC3')
+  ps
+  
+}
+# pvals_bp(hetero2_samples[[2030]], k=1,b=true_coeff[2])
+
+
+
+####
+#### EMPIRICAL SIZE
+#### Null hypothesis is Beta = Beta* (from regression w/ the full data)
+
+### Loop through the coefficients Beta1...Beta 4 (j = 1:4)
+for (j in 1:4){
+  
+  ## Get p values for all of our samples: 
+  #  1000 samples each for N = 25, 50, ... 1000
+  cl <- makeCluster(no_cores, type='FORK')
+  print(system.time(
+    all_pvals_size <- parLapply(cl, hetero2_samples, 
+                                function(x) pvals_bp(dat=x, 
+                                                  k=j,
+                                                  b=true_coeff[j+1]))))
+  stopCluster(cl)
+  # all_pvals_size[1:3]
+  pvals_size_mat <- matrix(unlist(all_pvals_size),
+                              ncol=length(all_pvals_size[[1]]),
+                              byrow=TRUE)
+  
+  ## REJECTION <- p < alpha = 0.5
+  reject_size_mat <- pvals_size_mat<0.05
+  reject_size_mat <- cbind(as.numeric(names(all_pvals_size)), reject_size_mat)
+  colnames(reject_size_mat) <- c('n', names(all_pvals_size[[1]]))
+  
+  ## Make a plot of the empirical size 
+  types = c('bp_HC0', 'bp_HC1', 'bp_HC2', 'bp_HC3')
+  
+  # paste0(types,  '=mean(', types, ')', collapse = ', ')
+  size_mat <- data.frame(reject_size_mat) %>% 
+    group_by(n) %>%
+    summarise(bp_HC0=mean(bp_HC0), bp_HC1=mean(bp_HC1), 
+              bp_HC2=mean(bp_HC2), bp_HC3=mean(bp_HC3))
+  size_mat
+  # cat(paste0(types,collapse=','))
+  size_mat <- gather(size_mat, type, reject_rate,
+                     c(bp_HC0,bp_HC1,bp_HC2,bp_HC3))
+  size_mat[,1] <- as.numeric(as.factor(unlist(size_mat[,1])))
+  size_plt <- ggplot(size_mat, aes(x=n, y=reject_rate, 
+                                   colour = type, shape=type))+
+    geom_point()+
+    geom_line()+
+    ggtitle(paste0('Question 4, Part D, Size, Beta', j))+
+    theme_bw() + 
+    scale_x_continuous(breaks=unique(unlist(size_mat[,1])),
+                                    labels=unlist(Ns))
+  print(size_plt)
+  
+}
+
+save.image('./data/q4_d.Rdata')
+
+```

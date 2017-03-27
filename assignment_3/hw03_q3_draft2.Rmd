@@ -1,0 +1,192 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+**Stat 230: Linear Models**  
+**Homework 3**  
+**Professor Ding**  
+**Lev Golod**  
+
+
+```{r prelim, include=FALSE}
+library(knitr)
+options(knitr.kable.NA = '')
+```
+
+
+#### Question 3, part A
+```{r q3a}
+## Input the data 
+x1<-c(2.34,2.46,2.83,2.04,2.69)
+x2<-c(2.64,3.00,3.19,3.83)
+x3<-c(2.61,2.07,2.80,2.58,2.98,2.30)
+x4<-c(1.32,1.62,1.92,0.88,1.50,1.30)
+x5<-c(0.41,0.83,0.53,0.32,1.62)
+mylist <- list(x1,x2,x3,x4,x5)
+names(mylist) <- c('coat1', 'coat2', 'coat3', 'shirt1', 'shirt2')
+# mylist
+
+
+## Identify mean[j] and n[j] for each treatment grp
+means <- sapply(mylist, mean)
+ns <- sapply(mylist, length)
+             
+## Identify grand mean and total n, total J             
+ybar <- mean(unlist(mylist))
+n <- length(unlist(mylist))
+J <- length(mylist)
+
+
+## Sum of Squares - Regression 
+# sum(sapply(mylist, function(x) 
+#   length(x) * (mean(x) - ybar)^2)) == sum(ns * (means - ybar)**2)
+df_reg <- (J-1)
+SSR <- sum(ns * (means - ybar)**2)
+MSR <- SSR/df_reg
+
+
+## Sum of Squaress - Error 
+SSE <- sum(sapply(mylist, function(x) 
+  sum( (x - mean(x))**2 )))
+df_err <- (n-J)
+MSE <- SSE/df_err
+
+
+## Sum of Squares - Total (just to check SST = SSE + SSR)
+SST <- sum( (unlist(mylist)-ybar)**2 )
+df_tot <- (n-1)
+# df_tot == df_err + df_reg
+# abs(SST - SSE - SSR) < 1e-10
+
+
+## Calculate F statistic & p value
+Fstat <- MSR/MSE
+p <- pf(Fstat, J-1, n-J, lower.tail = FALSE)
+
+
+## Display a table with ANOVA results
+names <- c('DF', 'SS', 'MS', 'F', 'P')
+source <- c("Regression", 'Error', 'Total')
+df <- c(df_reg, df_err, df_tot)
+SS <- c(SSR, SSE, SST)
+MS <- c(MSR, MSE, NA)
+F  <- c(Fstat, NA, NA)
+# P  <- c(p, NA, NA)
+P  <- c(p, NA, NA)
+q3a_anova <- cbind(df, SS, MS, F, P)
+rownames(q3a_anova) <- source
+colnames(q3a_anova) <- names
+q3a_anova_display <- apply(q3a_anova, c(1,2), function(x)
+  as.character(round(x,4)))
+q3a_anova_display['Regression','P'] <- format(p)
+kab <- kable(q3a_anova_display, digits = 5)
+cat("Question 3, Part A: Anova Table")
+```
+
+```{r q3a_kab, echo=FALSE, message=FALSE, warnings=FALSE, results='asis'}
+kab
+```
+
+The p-value is small, so we reject the Null Hypothesis.  
+H0: Beta_1 = ... Beta_J  
+We conclude that at least some of the pairs are different from one another.  
+
+
+
+```{r q3a_check}
+## Compare with R's built in fb 
+# put data into a data frame 
+labs <- mapply(rep, names(mylist), sapply(mylist, length))
+dat_q3a <- data.frame(
+  time = unlist(mylist, use.names = FALSE),
+  brand = unlist(labs, use.names = FALSE)
+)
+q3a_lm <- lm(time ~ brand, data = dat_q3a)
+# # Check that my result matches R's
+# abs(q3a_anova[1:2,] - anova(q3a_lm)) < 1e-10
+anova(q3a_lm)
+```
+
+
+
+#### Question 3, part B - this approach uses contrasts 
+```{r q3b}
+# Lambda
+L <- c(ns[1:3]/sum(ns[1:3]), -ns[4:5]/sum(ns[4:5]))
+# abs(sum(L)) < 1e-10
+
+# A function to output a t value and a TWO-SIDED p value for a contrast
+contr <- function(L, MSE, means, ns, df){
+  tstat <- abs(sum( means*L )) / (
+    ( MSE * sum((L**2) / ns) )**0.5
+  )
+  p <- pt(tstat, df, lower.tail = FALSE)
+  c(tstat = tstat, pval = p)
+}
+# cut the p-val in half since this is a 1 sided test
+contr(L, MSE, means, ns, n-J)["tstat"]; contr(L, MSE, means, ns, n-J)["pval"]/2
+```
+
+The p value is small so we reject the Null Hypothesis.  We conclude these brands  
+of coats are sturdier than these brands of shirts.  
+
+
+
+### Question 3, Part C 
+```{r q3c}
+checkeq <- function(a, b = 1e-10) abs(a) < b
+
+# Find contrasts 
+# I found these contrasts using Mathematica
+v1 <- c(119/11, -(130/11), 0, 0, 1)
+v2 <- c(-(4643/1012), -(8329/2024), 15591/2024, 0, 1)
+v3 <- c(-(427/14198), 1621/28396, -(3329/28396), -(12917/14198), 1)
+v <- list(v1,v2,v3)
+
+# # All must sum to 0
+# sapply(v, function(x) checkeq(sum(x)))
+# 
+# # All must be orthogonal to L
+# sapply(v, function(x) checkeq(t(x) %*% L ) )
+# 
+# # ALl must be mutually orthogonal - dot product = 0
+# t(v1) %*% L
+# t(v2) %*% L
+# t(v3) %*% L
+# t(v1) %*% v2
+# t(v1) %*% v3
+# t(v2) %*% v3
+cons <- c(list(L), v)
+names(cons) <- c('original', 'orthog1', 'orthog2', 'orthog3')
+# cons
+
+# Find the Sum of Squares for each contrast 
+# This is defined on Page 124 of 505 of the Christiansen book
+sscon <- function(L, means, ns) sum(L*means)**2 / sum( (L**2)/ns )
+sapply(cons, sscon, means = means, ns = ns)
+```
+
+
+
+#### Question 3, Part D
+```{r q3d}
+# Find a CI for the difference between shirt1 and shirt2
+# Identify the contrast that corresponds to this test
+L2 <- c(0,0,0,1,-1)
+
+# t critical value 
+alpha <- 0.05
+tstar <- qt(1-alpha/2, n-J)
+
+# center of the CI
+center <- t(L2) %*% means
+
+# SD of the test statistic 
+sd <- sqrt( MSE * sum((L2**2)/ns) )
+
+# Display the CI 
+center + c(-1,1) * sd * tstar
+```
+
+Since the CI does not contain zero, we conclude that shirt1 is sturdier.  

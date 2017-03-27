@@ -1,0 +1,73 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+**Stat 230: Linear Models**  
+**Homework 4**  
+**Professor Ding**  
+**Lev Golod**
+
+```{r prelim, include=FALSE, warning=FALSE}
+library(ggplot2)
+library(lmtest)
+library(MASS)
+options(digits=5, max.print = 20)
+```
+
+
+
+#### QUESTION 3, PART (A)
+
+We see a strong cone shape in the residual plot, and a weaker cone in the plot   
+ofsquare roots of studentized residuals. This is evidence of heteroskedasticity.  
+```{r q3_a}
+lm_model <- lm(dist ~ speed, data = cars)
+
+# ## Residuals vs Fitted Values
+# plt1a_resid <- ggplot(data.frame(x=lm_model$fitted.values, y=lm_model$residuals),
+#                       aes(x,y)) +
+#   geom_point() +
+#   xlab('Fitted Values') +
+#   ylab('Residuals') +
+#   ggtitle('Question 3 (A) : Residual vs. Fitted')
+# plt1a_resid
+# 
+# ## Square Root of Studentized Residuals vs Fitted Values
+# plt1a_stdresid <- ggplot(data.frame(x=lm_model$fitted.values, 
+#                                     y=abs(rstandard(lm_model))^0.5),
+#                       aes(x,y)) +
+#   geom_point() +
+#   xlab('Fitted Values') +
+#   ylab('Square Root of Studentized Residuals') +
+#   ggtitle('Question 3 (A) : Square Root of Studentized Residuals vs. Fitted')
+# plt1a_stdresid
+plot(lm_model)
+```
+
+
+
+#### QUESTION 3, PART (B)
+
+The p-value > 0.05; we fail to reject the null hypothesis of homoskedasticity  
+at the level of alpha = 0.05. However, based on the graph in Part (A) I think  
+that there is probably some heteroskedasticity after all.
+```{r 3_b}
+bptest(lm_model)
+```
+
+
+
+### Question 3, Part (C)
+
+Looking at the Residual and Square-Root of Studentized Residuals plots, we see  
+that there is now less of a fan shape. This means less heteroskedasticity.
+```{r 3_c}
+boxcox(lm_model,lambda=seq(0,1,by=.05))
+l <- 0.433
+y_transform <- (cars$dist^l - 1)/l
+newdat <- data.frame(y = y_transform, x = cars$speed)
+lm2<- lm(y ~ x, data = newdat)
+plot(lm2)
+```
+

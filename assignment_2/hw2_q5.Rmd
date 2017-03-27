@@ -1,0 +1,71 @@
+**Stat 230: Linear Models**  
+**Homework 2**  
+**Professor Ding**  
+**Lev Golod**  
+
+-----------
+
+```{r prelim, include=FALSE}
+library(ggplot2)
+library(rgl)
+load('./family.rda')
+names(family) <- tolower(names(family))
+```
+
+#### Question 5: Part A
+```{r Q5_PartA}
+# X matrix has column of 1s (for intercent), weight, and BMI
+X <- as.matrix(family)[,c(5,6)]
+X <- apply(X, 2, as.numeric)
+X <- cbind(rep(1, nrow(X)), X)
+
+# Y vector has height which is what we are predicting
+Y <- as.matrix(family)[,4,drop = FALSE]
+Y <- apply(Y, 2, as.numeric)
+
+# Beta-hat = (X'X)^-1 X' Y
+betahat = solve(t(X) %*% X) %*% t(X) %*% Y
+
+# Residuals : e-hat = Y - Yhat = Y - X beta-hat
+Yhat <- X %*% betahat
+ehat = Y - Yhat
+colnames(ehat) <- NULL
+
+
+print(round(betahat,3))
+print(t(round(ehat,3)))
+```
+
+
+#### Question 5: Part B
+```{r Q5_partB}
+myplot <- ggplot(family, aes(x = weight, y = height)) +
+  geom_point(aes(size = bmi)) +
+  theme(legend.position = 'none') +
+  ggtitle("Question 5B: Plot regression of height ~ weight", 
+          subtitle = "Point size corresponds to bmi")
+myplot + geom_smooth(method = 'lm', se = FALSE)
+```
+  
+Comment: We see that most of the larger points are below the regression line.  
+For a given weight, higher bmi individuals tend to be shorter than predicted,  
+and lower bmi individuals tend to be taller than predicted. This explains the  
+fact that the coefficient for bmi is negative: it means that, holding all else  
+constant, the relationship bewtween height and bmi is engative.  
+
+
+#### Question 5: Part C
+```{r Q5_partC}
+# open3d()
+plot3d(x = X[,'weight'], y = X[,'bmi'], z = Y,
+       xlab = "weight", ylab = "bmi", zlab = "height")
+a <- betahat['weight',]
+b <- betahat['bmi',]
+c <- -1
+d <- betahat[1,]
+planes3d(a,b,c,d)
+rgl.snapshot("HW2_Q5_partC_3dplot.png")
+```
+
+
+

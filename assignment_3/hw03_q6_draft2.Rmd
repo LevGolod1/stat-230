@@ -1,0 +1,135 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+**Stat 230: Linear Models**  
+**Homework 3**  
+**Professor Ding**  
+**Lev Golod**  
+
+
+```{r prelim, include=FALSE}
+library(ggplot2)
+```
+
+
+#### Question 6, part A
+```{r q6a}
+## Input the data 
+load('./data/Carseats.RData')
+car <- Carseats
+rm(Carseats)
+names(car) <- tolower(names(car))
+fit1 <- lm(sales ~ price + urban + us, car)
+summary(fit1)
+```
+
+
+#### Question 6, part B  
+Interpret the coefficients:  
+  
+_Price:_ ceteris paribus, a one-unit increase in price is predicted to be  
+associated with a -0.055 unit change in sales. This relationship is significant.
+
+_Urban:_ ceteris paribus, those observations in the 'yes' category are predicted  
+to differ in sales from the 'no' category by -0.022 units. This relationship is  
+not significant.  
+
+_US_ ceteris paribus, those observations in the 'yes' category are predicted  
+to differ in sales from the 'no' category by 1.20 units. This relationship is  
+significant.
+
+
+#### Question 6, part C  
+The regression model is $\hat y_i = \hat \beta_0 + \hat \beta_1\ x_{1,i} + \hat \beta_2\ x_{2,i} + \hat \beta_3\ x_{3,i}$,  
+where $\hat \beta_0 = 13.043469$, $\hat \beta_1 = -0.054459$, $\hat \beta_2 = -0.021916$,  
+$\hat \beta_3 = 1.200573$, $\hat y_i$ is the predicted Sales for observation i,  
+$x_{1,i}$ is the Price of observation i, $x_{2,i}$ is 1 if the 'Urban' value  
+of observation i is 'Yes', and 0 otherwise, $x_{3,i}$ is 1 if the 'US' value  
+of observation i is 'Yes', and 0 otherwise.  
+
+
+#### Question 6, part D
+At the level of $\alpha = 0.05$ we reject the Null Hypothesis $\beta_j = 0$ for  
+$\beta_1$ and $\beta_3$, that is, Price and US.  
+
+
+#### Question 6, part E
+```{r q6e}
+fit2 <- lm(sales ~ price + us, car)
+summary(fit2)
+```
+As the summary output for the model indicates, the p value associated with  
+the F statistic is small. We reject the Null Hypothesis $\beta_1 = \beta_2 = 0$.  
+We conclude that this model does have some explanatory power over $Y$, compared  
+to simply predicting $Y$ by a constant $\beta_0$. 
+
+
+
+#### Question 6, part F
+The models in E and F both have an adjusted R-squared around 0.23. This indicates  
+a somewhat weak fit. There is a substantial amount of variability in $Y$ that  
+is not captured in these models.  
+
+
+
+#### Question 6, part G
+We can use the Student's t distribution to construct confidence intervals  
+for the regression coefficients. The df for the t dist is n-j where j is the  
+number of parameters estimated by the model, including intercept. In this case  
+j = 3.  
+```{r q6g}
+n = nrow(car)
+j = 3
+alpha = 0.05
+a <- summary(fit2)$coefficients
+coeffs <- list(b0 = a[1,1:2], b1 = a[2,1:2], b2 = a[3,1:2])
+myfun <- function(x) x[1] + c(-1,1) * x[2] * 
+  qt(alpha/2, df = n-j, lower.tail = FALSE)
+lapply(coeffs, myfun)
+```
+
+
+
+#### Question 6, part H
+I will define a leverage point as any point whose leverage $h_{ii} > 3 \frac{p}{n}$,   
+where $h_{ii}$ is a diagonal entry in the Hat Matrix, and $p$ is the number of  
+parameters estimated by the model (including the coefficient), in our case 3. 
+```{r q6h}
+## Calculate the hat matrix for leverage purposes
+# grab the predictors we used
+X <- car[, c('price', 'us')]
+X$us <- as.numeric(X$us) - 1
+# add that trusty column of ones
+X <- cbind(1, X)
+X <- as.matrix(X)
+n <- nrow(X)
+
+H = X %*% solve(t(X) %*% X) %*% t(X)
+Hii = diag(H)
+names(Hii) <- 1:n
+numlev <- sum(Hii > 3*sum(Hii)/n)
+sprintf("There are %s leverage points, based on large leverage scores h[i,i]", 
+        numlev)
+
+
+## Plot to identify potential outliers 
+car$out = car$price < 45 | car$price > 175 | car$sales > 15
+
+plot1 <- ggplot(car, aes(x=price, y=sales, shape = out, colour = out)) +
+  geom_point() + 
+  facet_grid(. ~ us) + 
+  scale_colour_manual(values=c("black", "red")) + 
+  ggtitle("Question 6 (H): Potential Outliers") + 
+  theme_bw() + 
+  theme(legend.position="none")
+plot1
+```
+  
+The points marked as red triangles are somewhat far away from the general mass of  
+other points. I regard them as potential outliers.  
+  
+I conclude that we have some evidence of both outliers and high-leverage points.  
+
+
